@@ -1,4 +1,4 @@
-name: 🦎 Chameleon Mod — Build & Release
+name: "🦎 Chameleon Mod — Build & Release"
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       zip_name:
-        description: 'Zip dosyası adı (varsayılan: otomatik bulur)'
+        description: 'Zip dosyası adı (boş bırakırsan otomatik bulur)'
         required: false
         default: ''
 
@@ -18,21 +18,21 @@ concurrency:
 
 jobs:
   build:
-    name: 🔨 Build
+    name: "🔨 Build"
     runs-on: ubuntu-latest
 
     steps:
 
-      - name: 📥 Checkout
+      - name: "📥 Checkout"
         uses: actions/checkout@v4
 
-      - name: ☕ Java 17
+      - name: "☕ Java 17"
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: 📦 Zip dosyasını aç
+      - name: "📦 Zip dosyasını aç"
         id: extract
         run: |
           ZIP_INPUT="${{ github.event.inputs.zip_name }}"
@@ -48,13 +48,17 @@ jobs:
           echo "✅ Zip: $ZIP"
           echo "zip_path=$ZIP" >> $GITHUB_OUTPUT
           unzip -q "$ZIP" -d extracted/
+          echo "📂 Çıkartılan dosyalar:"
+          find extracted -maxdepth 3 -type f | sort | head -30
 
-      - name: 🔍 Mod klasörünü bul
+      - name: "🔍 Mod klasörünü ve gradlew'i bul"
         id: moddir
         run: |
           GRADLEW=$(find extracted -name "gradlew" -type f | head -1)
-          if [ -z "$GRADLEW" ]; then
-            # gradlew yoksa build.gradle'ın bulunduğu yere gradlew oluştur
+          if [ -n "$GRADLEW" ]; then
+            MODDIR=$(dirname "$GRADLEW")
+            chmod +x "$GRADLEW"
+          else
             BUILD=$(find extracted -name "build.gradle" | head -1)
             if [ -z "$BUILD" ]; then
               echo "❌ build.gradle bulunamadı!"
@@ -62,19 +66,18 @@ jobs:
               exit 1
             fi
             MODDIR=$(dirname "$BUILD")
-            cat > "$MODDIR/gradlew" << 'GRADLEW'
-#!/bin/sh
-exec gradle "$@"
-GRADLEW
+            printf '#!/bin/sh\nexec gradle "$@"\n' > "$MODDIR/gradlew"
             chmod +x "$MODDIR/gradlew"
-          else
-            MODDIR=$(dirname "$GRADLEW")
-            chmod +x "$GRADLEW"
           fi
           echo "✅ Mod klasörü: $MODDIR"
           echo "moddir=$MODDIR" >> $GITHUB_OUTPUT
 
-      - name: 🗄️ Gradle cache
+      - name: "⚙️ Gradle kur"
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.6'
+
+      - name: "🗄️ Gradle cache"
         uses: actions/cache@v4
         with:
           path: |
@@ -83,16 +86,11 @@ GRADLEW
           key: gradle-${{ runner.os }}-${{ hashFiles('extracted/**/gradle-wrapper.properties', 'extracted/**/*.gradle*') }}
           restore-keys: gradle-${{ runner.os }}-
 
-      - name: 🏗️ Derle
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: '8.6'
-
-      - name: 🔨 Gradle build
+      - name: "🔨 Derle"
         working-directory: ${{ steps.moddir.outputs.moddir }}
         run: gradle build --no-daemon --stacktrace
 
-      - name: 🔎 Jar dosyasını bul
+      - name: "🔎 Jar dosyasını bul"
         id: jarinfo
         run: |
           MODDIR="${{ steps.moddir.outputs.moddir }}"
@@ -113,7 +111,7 @@ GRADLEW
           echo "jar_name=$JARNAME" >> $GITHUB_OUTPUT
           echo "jar_size=$JARSIZE" >> $GITHUB_OUTPUT
 
-      - name: 📤 Artifact yükle
+      - name: "📤 Artifact yükle"
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.jarinfo.outputs.jar_name }}
@@ -121,7 +119,7 @@ GRADLEW
           if-no-files-found: error
           retention-days: 30
 
-      - name: 📊 Build özeti
+      - name: "📊 Build özeti"
         run: |
           echo "## 🦎 Chameleon Mod Build" >> $GITHUB_STEP_SUMMARY
           echo "| Alan | Değer |" >> $GITHUB_STEP_SUMMARY
@@ -132,7 +130,7 @@ GRADLEW
           echo "| ✅ Durum | Başarılı |" >> $GITHUB_STEP_SUMMARY
 
   release:
-    name: 🚀 GitHub Release
+    name: "🚀 GitHub Release"
     needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
@@ -141,13 +139,13 @@ GRADLEW
 
     steps:
 
-      - name: 📥 Artifact indir
+      - name: "📥 Artifact indir"
         uses: actions/download-artifact@v4
         with:
           path: release-files/
           merge-multiple: true
 
-      - name: 🚀 Release oluştur
+      - name: "🚀 Release oluştur"
         uses: softprops/action-gh-release@v2
         with:
           files: release-files/*.jar
