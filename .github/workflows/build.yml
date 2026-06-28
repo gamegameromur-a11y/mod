@@ -21,20 +21,42 @@ jobs:
           java-version: '17'
           distribution: 'microsoft'
 
-      - name: Gradle cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
-
-      - name: Gradle wrapper oluştur
+      - name: Gradle kur
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.6'
+
+      - name: Klasör yapısını düzelt (gerekirse)
+        run: |
+          # Eğer root'ta build.gradle yoksa, alt klasörde ara ve içeriği root'a taşı
+          if [ ! -f "build.gradle" ] && [ ! -f "build.gradle.kts" ]; then
+            echo "Root'ta build.gradle bulunamadı, alt klasörlerde aranıyor..."
+            BUILD_DIR=$(find . -maxdepth 2 -name "build.gradle" -o -name "build.gradle.kts" | head -1 | xargs dirname)
+            if [ -n "$BUILD_DIR" ] && [ "$BUILD_DIR" != "." ]; then
+              echo "Bulundu: $BUILD_DIR — içerik root'a taşınıyor"
+              mv "$BUILD_DIR"/* . 2>/dev/null || true
+              mv "$BUILD_DIR"/.[!.]* . 2>/dev/null || true
+            else
+              echo "Hiçbir yerde build.gradle bulunamadı!"
+              exit 1
+            fi
+          else
+            echo "Root'ta build.gradle mevcut, taşıma gerekmedi."
+          fi
+
+      - name: Yapıyı doğrula
+        run: |
+          echo "=== Root klasör içeriği ==="
+          ls -la
+          echo "=== settings.gradle içeriği ==="
+          cat settings.gradle 2>/dev/null || cat settings.gradle.kts 2>/dev/null || echo "settings.gradle bulunamadı"
+
+      - name: Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}
+          restore-keys: ${{ runner.os }}-gradle-
 
       - name: Derle
         run: gradle build --no-daemon
