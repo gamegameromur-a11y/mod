@@ -1,66 +1,209 @@
-name: Build Chameleon Mod
+name: 🦎 Chameleon Mod — Build & Release
 
+# ──────────────────────────────────────────────────────────────
+#  Tetikleyiciler:
+#   • main/master'a push → build + artifact yükle
+#   • v* tag push        → build + GitHub Release oluştur
+#   • Manuel çalıştır    → Actions sekmesinden "Run workflow"
+# ──────────────────────────────────────────────────────────────
 on:
   push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
+    tags:
+      - 'v*'
   workflow_dispatch:
+    inputs:
+      zip_name:
+        description: 'Zip dosyası adı (varsayılan: chameleon-mod-fixed.zip)'
+        required: false
+        default: 'chameleon-mod-fixed.zip'
+
+# Aynı anda yalnızca bir build çalışsın
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
+    name: 🔨 Build
     runs-on: ubuntu-latest
 
     steps:
-      - name: Kodu çek
+
+      # ── 1. Repo'yu al ──────────────────────────────────────────────────────
+      - name: 📥 Checkout
         uses: actions/checkout@v4
 
-      - name: Java 17 kur
+      # ── 2. Java 17 kur ────────────────────────────────────────────────────
+      - name: ☕ Java 17 kurulumu
         uses: actions/setup-java@v4
         with:
           java-version: '17'
-          distribution: 'microsoft'
+          distribution: 'temurin'
 
-      - name: Zip varsa çıkart, build.gradle'ı root'a taşı
+      # ── 3. Zip dosyasını bul ve aç ────────────────────────────────────────
+      - name: 📦 Zip dosyasını aç
+        id: extract
         run: |
-          # Zip dosyası varsa çıkart
-          ZIP=$(find . -maxdepth 1 -name "*.zip" | head -1)
-          if [ -n "$ZIP" ]; then
-            echo "Zip bulundu: $ZIP"
-            unzip -o "$ZIP" -d _extracted/
+          # Manuel çalıştırmada girilen ismi, yoksa otomatik bul
+          ZIP_INPUT="${{ github.event.inputs.zip_name }}"
+          
+          if [ -n "$ZIP_INPUT" ] && [ -f "$ZIP_INPUT" ]; then
+            ZIP="$ZIP_INPUT"
+          else
+            # Repo kökündeki ilk zip dosyasını al
+            ZIP=$(find . -maxdepth 1 -name "*.zip" | sort | head -1)
           fi
-
-          # build.gradle nerede?
-          BUILD=$(find . -name "build.gradle" ! -path "*/_extracted/*/extracted/*" | head -1)
-          if [ -z "$BUILD" ]; then
-            echo "HATA: build.gradle bulunamadı"
-            find . -not -path "*/.git/*" | sort
+          
+          if [ -z "$ZIP" ]; then
+            echo "❌ Hata: Repo kökünde hiç .zip dosyası bulunamadı!"
+            echo "   chameleon-mod-fixed.zip dosyasını repo'ya ekleyip push'la."
             exit 1
           fi
+          
+          echo "✅ Zip bulundu: $ZIP"
+          echo "zip_path=$ZIP" >> $GITHUB_OUTPUT
+          
+          unzip -q "$ZIP" -d extracted/
+          echo "📂 Çıkartılan dosyalar:"
+          find extracted -maxdepth 2 -type f | head -20
 
-          BUILD_DIR=$(dirname "$BUILD")
-          echo "Build dizini: $BUILD_DIR"
-
-          # Zaten root'taysa taşıma
-          if [ "$BUILD_DIR" = "." ]; then
-            echo "Zaten root'ta, taşıma gerekmez."
-          else
-            echo "Root'a taşınıyor..."
-            cp -rn "$BUILD_DIR"/. .
-          fi
-
-      - name: Gradle wrapper oluştur
+      # ── 4. Mod klasörünü ve gradlew'i bul ─────────────────────────────────
+      - name: 🔍 Mod klasörünü bul
+        id: moddir
         run: |
-          # wrapper jar yoksa indir
-          mkdir -p gradle/wrapper
-          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-            echo "Wrapper jar indiriliyor..."
-            curl -sL "https://raw.githubusercontent.com/gradle/gradle/v8.6.0/gradle/wrapper/gradle-wrapper.jar" \
-              -o gradle/wrapper/gradle-wrapper.jar 2>/dev/null || true
+          # gradlew'in bulunduğu klasörü mod kökü olarak kabul et
+          GRADLEW=$(find extracted -name "gradlew" -type f | head -1)
+          
+          if [ -z "$GRADLEW" ]; then
+            echo "❌ Hata: extracted/ içinde gradlew bulunamadı!"
+            ls -la extracted/
+            exit 1
           fi
+          
+          MODDIR=$(dirname "$GRADLEW")
+          echo "✅ Mod klasörü: $MODDIR"
+          echo "moddir=$MODDIR" >> $GITHUB_OUTPUT
+          
+          # gradlew'e çalıştırma izni ver
+          chmod +x "$GRADLEW"
 
-          # wrapper properties yaz
-          cat > gradle/wrapper/gradle-wrapper.properties << 'PROPS'
+      # ── 5. Gradle önbelleği ────────────────────────────────────────────────
+      - name: 🗄️ Gradle önbelleği
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('extracted/**/gradle-wrapper.properties', 'extracted/**/*.gradle*') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      # ── 6. Derle ──────────────────────────────────────────────────────────
+      - name: 🏗️ Derleniyor...
+        working-directory: ${{ steps.moddir.outputs.moddir }}
+        run: |
+          echo "📋 Proje bilgisi:"
+          cat gradle.properties 2>/dev/null || true
+          echo ""
+          echo "🔨 ./gradlew build başlatılıyor..."
+          ./gradlew build --no-daemon --stacktrace
+          echo ""
+          echo "✅ Derleme tamamlandı!"
+
+      # ── 7. Jar dosyasını bul ──────────────────────────────────────────────
+      - name: 🔎 Jar dosyasını bul
+        id: jarinfo
+        run: |
+          MODDIR="${{ steps.moddir.outputs.moddir }}"
+          
+          # -sources.jar ve -dev.jar'ı dışla, ana jar'ı al
+          JAR=$(find "$MODDIR/build/libs" -name "*.jar" \
+                  ! -name "*-sources.jar" \
+                  ! -name "*-dev.jar" \
+                  ! -name "*-javadoc.jar" \
+                | sort | head -1)
+          
+          if [ -z "$JAR" ]; then
+            echo "❌ Hata: build/libs/ içinde jar bulunamadı!"
+            ls -la "$MODDIR/build/libs/" 2>/dev/null || echo "(klasör yok)"
+            exit 1
+          fi
+          
+          JARNAME=$(basename "$JAR")
+          JARSIZE=$(du -sh "$JAR" | cut -f1)
+          
+          echo "✅ Jar: $JARNAME ($JARSIZE)"
+          echo "jar_path=$JAR"       >> $GITHUB_OUTPUT
+          echo "jar_name=$JARNAME"   >> $GITHUB_OUTPUT
+          echo "jar_size=$JARSIZE"   >> $GITHUB_OUTPUT
+
+      # ── 8. Artifact olarak yükle (her build'de) ───────────────────────────
+      - name: 📤 Artifact yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.jarinfo.outputs.jar_name }}
+          path: ${{ steps.jarinfo.outputs.jar_path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      # ── 9. Build özeti ────────────────────────────────────────────────────
+      - name: 📊 Build özeti
+        run: |
+          echo "## 🦎 Chameleon Mod Build" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Alan | Değer |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 📦 Zip | \`${{ steps.extract.outputs.zip_path }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| 📁 Mod klasörü | \`${{ steps.moddir.outputs.moddir }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🗄️ Jar | \`${{ steps.jarinfo.outputs.jar_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| 📏 Boyut | ${{ steps.jarinfo.outputs.jar_size }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ✅ Durum | Başarılı |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> Artifact'ı indirmek için Actions sekmesi → bu workflow çalışması → Artifacts bölümü" >> $GITHUB_STEP_SUMMARY
+
+  # ──────────────────────────────────────────────────────────────
+  # Release job — yalnızca v* tag push'larında çalışır
+  # ──────────────────────────────────────────────────────────────
+  release:
+    name: 🚀 GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    permissions:
+      contents: write   # release oluşturmak için
+
+    steps:
+
+      - name: 📥 Artifact'ı indir
+        uses: actions/download-artifact@v4
+        with:
+          path: release-files/
+          merge-multiple: true
+
+      - name: 🚀 GitHub Release oluştur
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-files/*.jar
+          generate_release_notes: true
+          name: "Chameleon Mod ${{ github.ref_name }}"
+          body: |
+            ## 🦎 Chameleon Mod ${{ github.ref_name }}
+
+            ### Kurulum
+            1. `chameleon-X.X.X.jar` dosyasını Minecraft `mods/` klasörüne koy
+            2. [Fabric API](https://modrinth.com/mod/fabric-api) modunu da aynı klasöre ekle
+            3. Minecraft 1.20.1 + Fabric ile başlat
+
+            ### Komutlar
+            | Komut | Açıklama |
+            |---|---|
+            | `/cham role hider` | Saklanan ol |
+            | `/cham role seeker` | Yakalayıcı ol |
+            | `/cham role none` | Rol sıfırla |
+            | `C` | Boyama panelini aç/kapat |
+            | `V / B` | Poz değiştir |          cat > gradle/wrapper/gradle-wrapper.properties << 'PROPS'
           distributionBase=GRADLE_USER_HOME
           distributionPath=wrapper/dists
           distributionUrl=https\://services.gradle.org/distributions/gradle-8.6-bin.zip
