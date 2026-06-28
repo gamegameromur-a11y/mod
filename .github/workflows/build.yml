@@ -48,10 +48,58 @@ jobs:
           echo "✅ Zip: $ZIP"
           echo "zip_path=$ZIP" >> $GITHUB_OUTPUT
           unzip -q "$ZIP" -d extracted/
-          echo "📂 Çıkartılan dosyalar:"
-          find extracted -maxdepth 3 -type f | sort | head -30
 
-      - name: "🔍 Mod klasörünü ve gradlew'i bul"
+      - name: "🔧 Kod hatalarını düzelt"
+        run: |
+          # ── 1. RoleEffects: getSize() → size() ──────────────────────────────
+          FILE=$(find extracted -path "*/role/RoleEffects.java" | head -1)
+          if [ -n "$FILE" ]; then
+            sed -i 's/\.getEnchantments()\.getSize()/.getEnchantments().size()/g' "$FILE"
+            echo "✅ RoleEffects: getSize() → size() düzeltildi"
+          fi
+
+          # ── 2. PlayerEntityMixin: handleFallDamage inject'ini kaldır ────────
+          FILE=$(find extracted -path "*/mixin/PlayerEntityMixin.java" | head -1)
+          if [ -n "$FILE" ]; then
+            python3 - "$FILE" << 'PYEOF'
+          import re, sys
+          path = sys.argv[1]
+          with open(path) as f:
+              src = f.read()
+          # handleFallDamage @Inject bloğunu kaldır
+          src = re.sub(
+              r'\s*@Inject\([^)]*handleFallDamage[^)]*\)[^{]*\{[^}]*\}',
+              '', src, flags=re.DOTALL)
+          # Kullanılmayan import'u kaldır
+          src = re.sub(r'import net\.minecraft\.entity\.damage\.DamageSource;\n', '', src)
+          src = re.sub(r'import org\.spongepowered\.asm\.mixin\.injection\.callback\.CallbackInfoReturnable;\n', '', src)
+          with open(path, 'w') as f:
+              f.write(src)
+          print("✅ PlayerEntityMixin: handleFallDamage kaldırıldı")
+          PYEOF
+          fi
+
+          # ── 3. PlayerModelMixin: BipedEntityModel hedefine çevir ────────────
+          FILE=$(find extracted -path "*/mixin/PlayerModelMixin.java" | head -1)
+          if [ -n "$FILE" ]; then
+            # @Mixin hedefini değiştir
+            sed -i 's/@Mixin(PlayerEntityModel\.class)/@Mixin(BipedEntityModel.class)/g' "$FILE"
+            # Import ekle (eğer yoksa)
+            if ! grep -q "BipedEntityModel" "$FILE"; then
+              sed -i 's/import net\.minecraft\.client\.render\.entity\.model\.PlayerEntityModel;/import net.minecraft.client.render.entity.model.BipedEntityModel;\nimport net.minecraft.client.render.entity.model.PlayerEntityModel;/' "$FILE"
+            fi
+            # setAngles descriptor'ını düzelt — AbstractClientPlayerEntity → LivingEntity
+            sed -i 's/method = "setAngles(Lnet\/minecraft\/client\/network\/AbstractClientPlayerEntity;FFFFF)V"/method = "setAngles(Lnet\/minecraft\/entity\/LivingEntity;FFFFF)V"/g' "$FILE"
+            # applyCustomPose metod parametresini düzelt
+            sed -i 's/private void applyCustomPose(AbstractClientPlayerEntity entity,/private void applyCustomPose(net.minecraft.entity.LivingEntity entity,/g' "$FILE"
+            # instanceof kontrolü ekle (entity'yi AbstractClientPlayerEntity'ye cast et)
+            sed -i 's/RoleManager\.Role role = RoleManager\.getRole(entity\.getUuid());/if (!(entity instanceof AbstractClientPlayerEntity player)) return;\n        RoleManager.Role role = RoleManager.getRole(player.getUuid());/g' "$FILE"
+            # entity. → player. referanslarını güncelle
+            sed -i 's/ChameleonPose pose = PlayerPaintStore\.getPose(entity\.getUuid());/ChameleonPose pose = PlayerPaintStore.getPose(player.getUuid());/g' "$FILE"
+            echo "✅ PlayerModelMixin: BipedEntityModel hedefine çevrildi"
+          fi
+
+      - name: "🔍 Mod klasörünü bul"
         id: moddir
         run: |
           GRADLEW=$(find extracted -name "gradlew" -type f | head -1)
