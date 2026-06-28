@@ -21,45 +21,89 @@ jobs:
           java-version: '17'
           distribution: 'microsoft'
 
-      - name: Gradle kur
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: '8.6'
-
-      - name: Zip dosyasını çıkart
+      - name: Zip varsa çıkart, build.gradle'ı root'a taşı
         run: |
-          ZIP=$(find . -not -path '*/.git/*' -name "*.zip" | head -1)
+          # Zip dosyası varsa çıkart
+          ZIP=$(find . -maxdepth 1 -name "*.zip" | head -1)
           if [ -n "$ZIP" ]; then
             echo "Zip bulundu: $ZIP"
-            unzip -o "$ZIP" -d extracted/
-            BUILD_FILE=$(find extracted/ -name "build.gradle" | head -1)
-            BUILD_DIR=$(dirname "$BUILD_FILE")
-            echo "Build dizini: $BUILD_DIR"
-            cp -r "$BUILD_DIR"/. .
-          else
-            echo "Zip bulunamadı, dosyalar zaten açık olabilir."
+            unzip -o "$ZIP" -d _extracted/
           fi
+
+          # build.gradle nerede?
+          BUILD=$(find . -name "build.gradle" ! -path "*/_extracted/*/extracted/*" | head -1)
+          if [ -z "$BUILD" ]; then
+            echo "HATA: build.gradle bulunamadı"
+            find . -not -path "*/.git/*" | sort
+            exit 1
+          fi
+
+          BUILD_DIR=$(dirname "$BUILD")
+          echo "Build dizini: $BUILD_DIR"
+
+          # Zaten root'taysa taşıma
+          if [ "$BUILD_DIR" = "." ]; then
+            echo "Zaten root'ta, taşıma gerekmez."
+          else
+            echo "Root'a taşınıyor..."
+            cp -rn "$BUILD_DIR"/. .
+          fi
+
+      - name: Gradle wrapper oluştur
+        run: |
+          # wrapper jar yoksa indir
+          mkdir -p gradle/wrapper
+          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            echo "Wrapper jar indiriliyor..."
+            curl -sL "https://raw.githubusercontent.com/gradle/gradle/v8.6.0/gradle/wrapper/gradle-wrapper.jar" \
+              -o gradle/wrapper/gradle-wrapper.jar 2>/dev/null || true
+          fi
+
+          # wrapper properties yaz
+          cat > gradle/wrapper/gradle-wrapper.properties << 'PROPS'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.6-bin.zip
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          PROPS
+
+          # gradlew script oluştur
+          curl -sL "https://raw.githubusercontent.com/gradle/gradle/v8.6.0/gradlew" -o gradlew 2>/dev/null || \
+          cat > gradlew << 'GRADLEW'
+          #!/bin/sh
+          exec gradle "$@"
+          GRADLEW
+          chmod +x gradlew
+
+      - name: Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
 
       - name: Yapıyı doğrula
         run: |
           echo "=== Root içeriği ==="
           ls -la
-          echo "=== build.gradle var mı ==="
-          cat build.gradle | head -10
-
-      - name: Gradle cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.gradle/caches
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}
-          restore-keys: ${{ runner.os }}-gradle-
+          echo "=== build.gradle ilk 5 satır ==="
+          head -5 build.gradle
 
       - name: Derle
-        run: gradle build --no-daemon
+        run: ./gradlew build --no-daemon --stacktrace
 
-      - name: .jar dosyasını yükle
+      - name: .jar dosyasını yükle (dev jar hariç)
         uses: actions/upload-artifact@v4
         with:
-          name: chameleon-mod
+          name: chameleon-mod-${{ github.sha }}
+          path: |
+            build/libs/*.jar
+            !build/libs/*-dev.jar
+            !build/libs/*-sources.jar
+          if-no-files-found: error          name: chameleon-mod
           path: build/libs/*.jar
           if-no-files-found: error
