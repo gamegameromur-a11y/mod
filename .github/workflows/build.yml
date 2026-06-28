@@ -51,52 +51,166 @@ jobs:
 
       - name: "🔧 Kod hatalarını düzelt"
         run: |
-          # ── 1. RoleEffects: getSize() → size() ──────────────────────────────
+          # ── 1. RoleEffects: getSize() → size() ──────────────────────────
           FILE=$(find extracted -path "*/role/RoleEffects.java" | head -1)
           if [ -n "$FILE" ]; then
             sed -i 's/\.getEnchantments()\.getSize()/.getEnchantments().size()/g' "$FILE"
-            echo "✅ RoleEffects: getSize() → size() düzeltildi"
+            echo "✅ RoleEffects düzeltildi"
           fi
 
-          # ── 2. PlayerEntityMixin: handleFallDamage inject'ini kaldır ────────
+          # ── 2. PlayerEntityMixin: dosyayı tamamen yeniden yaz ────────────
           FILE=$(find extracted -path "*/mixin/PlayerEntityMixin.java" | head -1)
           if [ -n "$FILE" ]; then
-            python3 - "$FILE" << 'PYEOF'
-          import re, sys
-          path = sys.argv[1]
-          with open(path) as f:
-              src = f.read()
-          # handleFallDamage @Inject bloğunu kaldır
-          src = re.sub(
-              r'\s*@Inject\([^)]*handleFallDamage[^)]*\)[^{]*\{[^}]*\}',
-              '', src, flags=re.DOTALL)
-          # Kullanılmayan import'u kaldır
-          src = re.sub(r'import net\.minecraft\.entity\.damage\.DamageSource;\n', '', src)
-          src = re.sub(r'import org\.spongepowered\.asm\.mixin\.injection\.callback\.CallbackInfoReturnable;\n', '', src)
-          with open(path, 'w') as f:
-              f.write(src)
-          print("✅ PlayerEntityMixin: handleFallDamage kaldırıldı")
-          PYEOF
+            cat > "$FILE" << 'JAVA'
+          package com.chameleon.mixin;
+
+          import com.chameleon.paint.PlayerPaintStore;
+          import com.chameleon.role.RoleManager;
+          import net.minecraft.nbt.NbtCompound;
+          import net.minecraft.server.network.ServerPlayerEntity;
+          import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.injection.At;
+          import org.spongepowered.asm.mixin.injection.Inject;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
+          @Mixin(ServerPlayerEntity.class)
+          public class PlayerEntityMixin {
+
+              @Inject(method = "readCustomDataFromNbt", at = @At("TAIL"))
+              private void onLoadNbt(NbtCompound nbt, CallbackInfo ci) {
+                  ServerPlayerEntity self = (ServerPlayerEntity)(Object)this;
+                  if (nbt.contains("ChameleonData")) {
+                      PlayerPaintStore.loadPlayer(self.getUuid(), nbt.getCompound("ChameleonData"));
+                  }
+              }
+
+              @Inject(method = "writeCustomDataToNbt", at = @At("TAIL"))
+              private void onSaveNbt(NbtCompound nbt, CallbackInfo ci) {
+                  ServerPlayerEntity self = (ServerPlayerEntity)(Object)this;
+                  nbt.put("ChameleonData", PlayerPaintStore.savePlayer(self.getUuid()));
+              }
+
+              @Inject(method = "onDisconnect", at = @At("TAIL"))
+              private void onPlayerLeave(CallbackInfo ci) {
+                  ServerPlayerEntity self = (ServerPlayerEntity)(Object)this;
+                  PlayerPaintStore.remove(self.getUuid());
+                  RoleManager.remove(self.getUuid());
+              }
+          }
+          JAVA
+            echo "✅ PlayerEntityMixin yeniden yazıldı"
           fi
 
-          # ── 3. PlayerModelMixin: BipedEntityModel hedefine çevir ────────────
+          # ── 3. PlayerModelMixin: dosyayı tamamen yeniden yaz ─────────────
           FILE=$(find extracted -path "*/mixin/PlayerModelMixin.java" | head -1)
           if [ -n "$FILE" ]; then
-            # @Mixin hedefini değiştir
-            sed -i 's/@Mixin(PlayerEntityModel\.class)/@Mixin(BipedEntityModel.class)/g' "$FILE"
-            # Import ekle (eğer yoksa)
-            if ! grep -q "BipedEntityModel" "$FILE"; then
-              sed -i 's/import net\.minecraft\.client\.render\.entity\.model\.PlayerEntityModel;/import net.minecraft.client.render.entity.model.BipedEntityModel;\nimport net.minecraft.client.render.entity.model.PlayerEntityModel;/' "$FILE"
-            fi
-            # setAngles descriptor'ını düzelt — AbstractClientPlayerEntity → LivingEntity
-            sed -i 's/method = "setAngles(Lnet\/minecraft\/client\/network\/AbstractClientPlayerEntity;FFFFF)V"/method = "setAngles(Lnet\/minecraft\/entity\/LivingEntity;FFFFF)V"/g' "$FILE"
-            # applyCustomPose metod parametresini düzelt
-            sed -i 's/private void applyCustomPose(AbstractClientPlayerEntity entity,/private void applyCustomPose(net.minecraft.entity.LivingEntity entity,/g' "$FILE"
-            # instanceof kontrolü ekle (entity'yi AbstractClientPlayerEntity'ye cast et)
-            sed -i 's/RoleManager\.Role role = RoleManager\.getRole(entity\.getUuid());/if (!(entity instanceof AbstractClientPlayerEntity player)) return;\n        RoleManager.Role role = RoleManager.getRole(player.getUuid());/g' "$FILE"
-            # entity. → player. referanslarını güncelle
-            sed -i 's/ChameleonPose pose = PlayerPaintStore\.getPose(entity\.getUuid());/ChameleonPose pose = PlayerPaintStore.getPose(player.getUuid());/g' "$FILE"
-            echo "✅ PlayerModelMixin: BipedEntityModel hedefine çevrildi"
+            cat > "$FILE" << 'JAVA'
+          package com.chameleon.mixin;
+
+          import com.chameleon.paint.PlayerPaintStore;
+          import com.chameleon.pose.ChameleonPose;
+          import net.fabricmc.api.EnvType;
+          import net.fabricmc.api.Environment;
+          import net.minecraft.client.model.ModelPart;
+          import net.minecraft.client.network.AbstractClientPlayerEntity;
+          import net.minecraft.client.render.entity.model.BipedEntityModel;
+          import net.minecraft.entity.LivingEntity;
+          import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.Shadow;
+          import org.spongepowered.asm.mixin.injection.At;
+          import org.spongepowered.asm.mixin.injection.Inject;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
+          @Environment(EnvType.CLIENT)
+          @Mixin(BipedEntityModel.class)
+          public class PlayerModelMixin {
+
+              @Shadow public ModelPart head;
+              @Shadow public ModelPart body;
+              @Shadow public ModelPart rightArm;
+              @Shadow public ModelPart leftArm;
+              @Shadow public ModelPart rightLeg;
+              @Shadow public ModelPart leftLeg;
+
+              @Inject(method = "setAngles", at = @At("RETURN"))
+              private void applyCustomPose(LivingEntity entity,
+                                           float limbAngle, float limbDistance,
+                                           float animProgress, float headYaw, float headPitch,
+                                           CallbackInfo ci) {
+                  if (!(entity instanceof AbstractClientPlayerEntity player)) return;
+
+                  ChameleonPose pose = PlayerPaintStore.getPose(player.getUuid());
+                  if (pose == ChameleonPose.STAND) return;
+
+                  resetAll();
+
+                  switch (pose) {
+                      case PRONE         -> applyProne();
+                      case SIDE_LAY      -> applySideLay();
+                      case CROUCH_CUSTOM -> applyCrouchCustom(headPitch);
+                      case FETAL         -> applyFetal();
+                      case WALL_HUG      -> applyWallHug(headPitch);
+                  }
+              }
+
+              private void resetAll() {
+                  head.pitch = 0;     head.yaw = 0;     head.roll = 0;
+                  body.pitch = 0;     body.yaw = 0;     body.roll = 0;
+                  rightArm.pitch = 0; rightArm.roll = 0; rightArm.yaw = 0;
+                  leftArm.pitch  = 0; leftArm.roll  = 0; leftArm.yaw  = 0;
+                  rightLeg.pitch = 0; rightLeg.roll = 0;
+                  leftLeg.pitch  = 0; leftLeg.roll  = 0;
+              }
+
+              private void applyProne() {
+                  body.pitch     = rad(90);
+                  head.pitch     = rad(-90);
+                  rightArm.pitch = rad(-160); rightArm.roll = rad(-20);
+                  leftArm.pitch  = rad(-160); leftArm.roll  = rad( 20);
+                  rightLeg.pitch = rad(-10);
+                  leftLeg.pitch  = rad(-10);
+              }
+
+              private void applySideLay() {
+                  body.roll     = rad(-90);
+                  head.roll     = rad(-90);
+                  rightArm.roll = rad(-90);
+                  leftArm.roll  = rad(-90);
+                  rightLeg.roll = rad(-15); rightLeg.pitch = rad( 10);
+                  leftLeg.roll  = rad(-25); leftLeg.pitch  = rad(-10);
+              }
+
+              private void applyCrouchCustom(float headPitch) {
+                  body.pitch     = rad(40);
+                  head.pitch     = rad(-35) + headPitch;
+                  rightArm.pitch = rad(-50); rightArm.roll = rad( 15);
+                  leftArm.pitch  = rad(-50); leftArm.roll  = rad(-15);
+                  rightLeg.pitch = rad(50);
+                  leftLeg.pitch  = rad(50);
+              }
+
+              private void applyFetal() {
+                  body.pitch     = rad(70);
+                  head.pitch     = rad(-60);
+                  rightArm.pitch = rad(-120); rightArm.roll = rad( 30);
+                  leftArm.pitch  = rad(-120); leftArm.roll  = rad(-30);
+                  rightLeg.pitch = rad(130);  rightLeg.roll = rad( 10);
+                  leftLeg.pitch  = rad(130);  leftLeg.roll  = rad(-10);
+              }
+
+              private void applyWallHug(float headPitch) {
+                  body.pitch     = rad(-20);
+                  head.pitch     = rad(15) + headPitch;
+                  rightArm.pitch = rad(-170); rightArm.roll = rad( 25);
+                  leftArm.pitch  = rad(-170); leftArm.roll  = rad(-25);
+                  rightLeg.pitch = rad(10);
+                  leftLeg.pitch  = rad(10);
+              }
+
+              private static float rad(float deg) { return (float) Math.toRadians(deg); }
+          }
+          JAVA
+            echo "✅ PlayerModelMixin yeniden yazıldı"
           fi
 
       - name: "🔍 Mod klasörünü bul"
@@ -110,7 +224,6 @@ jobs:
             BUILD=$(find extracted -name "build.gradle" | head -1)
             if [ -z "$BUILD" ]; then
               echo "❌ build.gradle bulunamadı!"
-              find extracted | sort
               exit 1
             fi
             MODDIR=$(dirname "$BUILD")
@@ -149,7 +262,6 @@ jobs:
                 | sort | head -1)
           if [ -z "$JAR" ]; then
             echo "❌ Jar bulunamadı!"
-            ls -la "$MODDIR/build/libs/" 2>/dev/null || true
             exit 1
           fi
           JARNAME=$(basename "$JAR")
