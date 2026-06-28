@@ -1,0 +1,45 @@
+name: Build Chameleon Mod
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Kodu çek
+        uses: actions/checkout@v4
+
+      - name: Java 17 kur
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'microsoft'
+
+      - name: Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Gradle wrapper'a izin ver
+        run: chmod +x gradlew
+
+      - name: Derle
+        run: ./gradlew build --no-daemon
+
+      - name: .jar dosyasını artifact olarak yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: chameleon-mod
+          path: build/libs/*.jar
+          if-no-files-found: error
