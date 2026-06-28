@@ -26,30 +26,26 @@ jobs:
         with:
           gradle-version: '8.6'
 
-      - name: Klasör yapısını düzelt (gerekirse)
+      - name: Zip dosyasını çıkart
         run: |
-          # Eğer root'ta build.gradle yoksa, alt klasörde ara ve içeriği root'a taşı
-          if [ ! -f "build.gradle" ] && [ ! -f "build.gradle.kts" ]; then
-            echo "Root'ta build.gradle bulunamadı, alt klasörlerde aranıyor..."
-            BUILD_DIR=$(find . -maxdepth 2 -name "build.gradle" -o -name "build.gradle.kts" | head -1 | xargs dirname)
-            if [ -n "$BUILD_DIR" ] && [ "$BUILD_DIR" != "." ]; then
-              echo "Bulundu: $BUILD_DIR — içerik root'a taşınıyor"
-              mv "$BUILD_DIR"/* . 2>/dev/null || true
-              mv "$BUILD_DIR"/.[!.]* . 2>/dev/null || true
-            else
-              echo "Hiçbir yerde build.gradle bulunamadı!"
-              exit 1
-            fi
+          ZIP=$(find . -not -path '*/.git/*' -name "*.zip" | head -1)
+          if [ -n "$ZIP" ]; then
+            echo "Zip bulundu: $ZIP"
+            unzip -o "$ZIP" -d extracted/
+            BUILD_FILE=$(find extracted/ -name "build.gradle" | head -1)
+            BUILD_DIR=$(dirname "$BUILD_FILE")
+            echo "Build dizini: $BUILD_DIR"
+            cp -r "$BUILD_DIR"/. .
           else
-            echo "Root'ta build.gradle mevcut, taşıma gerekmedi."
+            echo "Zip bulunamadı, dosyalar zaten açık olabilir."
           fi
 
       - name: Yapıyı doğrula
         run: |
-          echo "=== Root klasör içeriği ==="
+          echo "=== Root içeriği ==="
           ls -la
-          echo "=== settings.gradle içeriği ==="
-          cat settings.gradle 2>/dev/null || cat settings.gradle.kts 2>/dev/null || echo "settings.gradle bulunamadı"
+          echo "=== build.gradle var mı ==="
+          cat build.gradle | head -10
 
       - name: Gradle cache
         uses: actions/cache@v4
@@ -61,7 +57,7 @@ jobs:
       - name: Derle
         run: gradle build --no-daemon
 
-      - name: .jar dosyasını artifact olarak yükle
+      - name: .jar dosyasını yükle
         uses: actions/upload-artifact@v4
         with:
           name: chameleon-mod
